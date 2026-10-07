@@ -13,6 +13,8 @@ interface ShareView {
   label: string | null;
   expiresAt: string;
   requiresPassword: boolean;
+  /** 口令验证通过后服务端签发的媒体通行证，取媒体字节时以 ?st= 带上 */
+  mediaToken: string | null;
   items: Item[];
 }
 
@@ -96,6 +98,18 @@ export function ShareViewPage() {
 
   if (!view) return null;
 
+  // 带密码的分享：媒体地址都要附上通行证，否则公开媒体端点会拒绝（401）
+  const withGrant = (url: string | null | undefined): string | undefined => {
+    if (!url || !view.mediaToken) return url ?? undefined;
+    return `${url}${url.includes('?') ? '&' : '?'}st=${encodeURIComponent(view.mediaToken)}`;
+  };
+  const mediaWithGrant = (m: Item['media'][number]): Item['media'][number] => ({
+    ...m,
+    rawUrl: withGrant(m.rawUrl) ?? m.rawUrl,
+    thumbUrl: withGrant(m.thumbUrl) ?? null,
+    waveformUrl: withGrant(m.waveformUrl) ?? null,
+  });
+
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -135,12 +149,12 @@ export function ShareViewPage() {
                 {item.storyHtml ? (
                   <div className="story" dangerouslySetInnerHTML={{ __html: item.storyHtml }} />
                 ) : null}
-                <ImageGallery media={item.media.filter((m) => m.kind === 'image')} />
+                <ImageGallery media={item.media.filter((m) => m.kind === 'image').map(mediaWithGrant)} />
                 {item.media
                   .filter((m) => m.kind === 'audio')
                   .map((m) => (
                     <div key={m.id} style={{ marginTop: 'var(--space-3)' }}>
-                      <AudioPlayer media={{ ...m, rawUrl: `/api/v1/public/share/${token}/media/${m.id}/download` }} />
+                      <AudioPlayer media={mediaWithGrant(m)} />
                     </div>
                   ))}
               </article>

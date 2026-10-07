@@ -23,7 +23,10 @@ publicRouter.get(
   asyncHandler(async (req, res) => {
     const variant = req.params.variant!;
     if (!['raw', 'thumb', 'waveform', 'download'].includes(variant)) throw notFound('媒体不存在');
-    const media = await shareService.assertPublicMedia(req.params.token!, req.params.mediaId!);
+    // 媒体通行证通过 ?st= 携带（<img>/<audio> 标签无法自定义请求头），
+    // 与登录态的 ?t= 区分开，避免两种凭证互相干扰
+    const grant = typeof req.query.st === 'string' && req.query.st.length > 0 ? req.query.st : undefined;
+    const media = await shareService.assertPublicMedia(req.params.token!, req.params.mediaId!, grant);
     const target = await mediaFileTarget(media, variant as 'raw' | 'thumb' | 'waveform' | 'download');
     sendStoredFile(req, res, {
       key: target.key,
