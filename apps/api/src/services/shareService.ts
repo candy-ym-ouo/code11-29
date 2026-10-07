@@ -6,6 +6,7 @@ import { hashPassword, verifyPassword } from './authService';
 import * as audit from './auditService';
 import { toItemDto, toShareLinkDto } from '../serializers';
 import { itemWithAccess, type FamilyContext } from './permissionService';
+import { signShareMediaToken, verifyShareMediaToken } from './tokenService';
 
 export interface ActorMeta {
   ip?: string | null;
@@ -90,6 +91,8 @@ export interface PublicShareView {
   label: string | null;
   expiresAt: string;
   requiresPassword: boolean;
+  /** 通过访问校验（含口令）后下发的访客媒体凭证；未通过时为 null，媒体端点一律拒绝 */
+  mediaToken: string | null;
   items: ReturnType<typeof toItemDto>[];
 }
 
@@ -104,15 +107,33 @@ async function loadLink(token: string) {
   return link;
 }
 
-export async function viewShareLink(token: string, password?: string): Promise<PublicShareView> {
+/** 与查看分享完全相同的访问校验：链接有效 + 口令（如有）正确。 */
+async function assertShareAccess(
+  token: string,
+  password?: string,
+): Promise<{ ok: true; link: Awaited<ReturnType<typeof loadLink>> } | { ok: false; requiresPassword: true; link: Awaited<ReturnType<typeof loadLink>> }> {
   const link = await loadLink(token);
-
   if (link.passwordHash) {
-    if (!password) {
-      return { familyName: link.family.name, label: link.label, expiresAt: link.expiresAt.toISOString(), requiresPassword: true, items: [] };
-    }
+    if (!password) return { ok: false, requiresPassword: true, link };
     const ok = await verifyPassword(password, link.passwordHash);
     if (!ok) throw unauthenticated('访问密码不正确');
+  }
+  return { ok: true, link };
+}
+
+export async function viewShareLink(token: string, password?: string): Promise<PublicShareView> {
+  const access = await assertShareAccess(token, password);
+  const link = access.link;
+
+  if (!access.ok) {
+    return {
+      familyName: link.family.name,
+      label: link.label,
+      expiresAt: link.expiresAt.toISOString(),
+      requiresPassword: true,
+      mediaToken: null,
+      items: [],
+    };
   }
 
   const rows = await prisma.item.findMany({
@@ -135,15 +156,33 @@ export async function viewShareLink(token: string, password?: string): Promise<P
     label: link.label,
     expiresAt: link.expiresAt.toISOString(),
     requiresPassword: false,
+    mediaToken: signShareMediaToken(link.id),
     items: rows.map((r) => toItemDto(r, link.familyId)),
   };
 }
 
-/** 访客读媒体：必须证明该媒体属于本链接覆盖的条目。 */
-export async function assertPublicMedia(token: string, mediaId: string) {
-  const link = await loadLink(token);
+/**
+ * 访客读媒体：必须证明 (1) 已通过与查看分享相同的访问校验——这里具体表现为
+ * 持有口令校验通过后签发、且绑定本链接的访客媒体凭证；(2) 该媒体属于本链接
+ * 覆盖的未删除条目。未验证口令（或无密码链接未取过凭证）一律不放行。
+ */
+export async function assertPublicMedia(grantToken: string | undefined, shareToken: string, mediaId: string) {
+  const link = await loadLink(shareToken);
+  if (!grantToken) throw unauthenticated('请先通过分享访问校验');
+
+  const grant = verifyShareMediaToken(grantToken);
+  if (grant.linkId !== link.id) throw unauthenticated('分享访问凭证无效');
+
   const media = await prisma.itemMedia.findFirst({
-    where: { id: mediaId, deletedAt: null, item: { shareLinks: { some: { shareLinkId: link.id } } } },
+    where: {
+      id: mediaId,
+      deletedAt: null,
+      item: {
+        shareLinks: { some: { shareLinkId: link.id } },
+        deletedAt: null,
+        status: { not: 'trashed' },
+      },
+    },
   });
   if (!media) throw notFound('媒体不存在');
   return media;

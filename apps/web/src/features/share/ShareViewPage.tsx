@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import { api, ApiError } from '../../api/client';
@@ -7,12 +7,15 @@ import { ImageGallery } from '../media/ImageGallery';
 import { AudioPlayer } from '../media/AudioPlayer';
 import { CATEGORY_ICONS, CATEGORY_LABELS } from '../../lib/constants';
 import type { Item } from '../../api/types';
+import { toPublicMedia } from './publicMedia';
 
 interface ShareView {
   familyName: string;
   label: string | null;
   expiresAt: string;
   requiresPassword: boolean;
+  /** 口令校验通过后下发的访客媒体凭证；未通过访问校验时为 null，拿不到任何媒体 */
+  mediaToken: string | null;
   items: Item[];
 }
 
@@ -40,6 +43,16 @@ export function ShareViewPage() {
     // 只在 token 变化时重新探测
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  // 通过访问校验后，所有媒体地址改写到访客端点并附上门签（st）；
+  // 未通过时 mediaToken 为 null，服务端不会返回任何媒体内容
+  const items = useMemo(() => {
+    if (!view?.mediaToken || !token) return view?.items ?? [];
+    return view.items.map((item) => ({
+      ...item,
+      media: item.media.map((m) => toPublicMedia(token, m, view.mediaToken!)),
+    }));
+  }, [view, token]);
 
   if (open.isPending && !view) return <Spinner label="正在打开分享…" />;
 
@@ -114,15 +127,15 @@ export function ShareViewPage() {
         <div className="page-head">
           <div>
             <h1>{view.label || '家人分享给你的记录'}</h1>
-            <p className="page-head__sub">共 {view.items.length} 条，链接有效期至 {new Date(view.expiresAt).toLocaleDateString('zh-CN')}</p>
+            <p className="page-head__sub">共 {items.length} 条，链接有效期至 {new Date(view.expiresAt).toLocaleDateString('zh-CN')}</p>
           </div>
         </div>
 
-        {view.items.length === 0 ? (
+        {items.length === 0 ? (
           <EmptyState title="没有可查看的内容" description="可能分享已经被撤销或内容已删除。" />
         ) : (
           <div className="stack">
-            {view.items.map((item) => (
+            {items.map((item) => (
               <article key={item.id} className="card">
                 <div className="row" style={{ gap: 'var(--space-2)', marginBottom: 6 }}>
                   <Tag>
@@ -140,7 +153,7 @@ export function ShareViewPage() {
                   .filter((m) => m.kind === 'audio')
                   .map((m) => (
                     <div key={m.id} style={{ marginTop: 'var(--space-3)' }}>
-                      <AudioPlayer media={{ ...m, rawUrl: `/api/v1/public/share/${token}/media/${m.id}/download` }} />
+                      <AudioPlayer media={m} />
                     </div>
                   ))}
               </article>

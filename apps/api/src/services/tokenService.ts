@@ -31,6 +31,40 @@ export function verifyAccessToken(token: string): AccessPayload {
   }
 }
 
+/**
+ * 访客媒体凭证：访客通过分享链接的访问校验（含口令校验）后签发，
+ * 仅用于取走该链接覆盖条目的媒体。绑定 linkId，媒体端点每次请求
+ * 仍要重新确认链接未撤销/未过期，因此撤销/过期即时生效。
+ */
+export const SHARE_MEDIA_TOKEN_TTL = '12h';
+
+export interface ShareMediaPayload {
+  /** 固定标识，避免与登录 access token 混用 */
+  kind: 'share-media';
+  linkId: string;
+}
+
+export function signShareMediaToken(linkId: string): string {
+  return jwt.sign({ kind: 'share-media', linkId } satisfies ShareMediaPayload, config.JWT_SECRET, {
+    expiresIn: SHARE_MEDIA_TOKEN_TTL,
+  });
+}
+
+export function verifyShareMediaToken(token: string): ShareMediaPayload {
+  let decoded: string | jwt.JwtPayload;
+  try {
+    decoded = jwt.verify(token, config.JWT_SECRET);
+  } catch (err) {
+    if (err instanceof jwt.TokenExpiredError) throw new AppError('TOKEN_EXPIRED', '分享访问已过期，请重新输入访问密码');
+    throw unauthenticated('分享访问凭证无效');
+  }
+  const payload = typeof decoded === 'string' ? null : (decoded as jwt.JwtPayload);
+  if (!payload || payload.kind !== 'share-media' || typeof payload.linkId !== 'string') {
+    throw unauthenticated('分享访问凭证无效');
+  }
+  return { kind: 'share-media', linkId: payload.linkId };
+}
+
 function ttlToMs(ttl: string): number {
   const m = /^(\d+)([smhd])$/.exec(ttl);
   if (!m) return 14 * 24 * 3600 * 1000;
